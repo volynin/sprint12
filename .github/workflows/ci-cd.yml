@@ -1,0 +1,73 @@
+name: CI/CD Pipeline
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+  push:
+    tags: [ 'v*' ]  # Запуск при добавлении тегов вида v1.0.0
+
+jobs:
+  test-and-build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.22'  
+
+      - name: Install dependencies
+        run: |
+          go mod download
+          go install github.com/stretchr/testify/require@latest
+
+      - name: Run tests
+        run: go test -v ./...
+
+      - name: Build Docker image
+        run: docker build -t my-app:latest .
+
+      - name: Test Docker image
+        run: |
+          docker run -d --name test-container my-app:latest
+          sleep 5  # Ждём запуска приложения
+          docker logs test-container
+          docker stop test-container
+          docker rm test-container
+
+  publish-to-dockerhub:
+    needs: test-and-build
+    runs-on: ubuntu-latest
+    if: contains(github.ref, 'tags/')  
+    environment: production
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Log in to Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Extract metadata for Docker
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ secrets.DOCKERHUB_USERNAME }}/my-app
+          tags: |
+            type=ref,event=branch
+            type=semver,pattern={{version}}
+            type=sha
+
+      - name: Build and push Docker image
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
